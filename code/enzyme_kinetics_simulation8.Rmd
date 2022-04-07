@@ -1,0 +1,291 @@
+---
+title: "Simulation of enzyme kinetics data"
+output: html_notebook
+---
+
+```{r}
+library(here)
+library(fs)
+library(readxl)
+library(writexl)
+library(tidyverse)
+library(magrittr)
+library(broom)
+library(gridExtra)
+library(ggpmisc)
+```
+
+### Set the experimental parameters
+
+All enzyme-related parameters are put into a single dataframe.
+
+```{r}
+# Import the parameters for the simulations
+rxn_params <- read_xlsx(here("data", "reaction_parameters.xlsx"))
+
+# Reaction duration in minutes
+time <- c(.17, .33, .5, .66, .83, 1) 
+
+# Substrates
+rxn_substr <- unique(rxn_params$rxn_substrate)
+
+# Type of inhibition
+inh_type <- unique(rxn_params$inhibition_actual)[-1]
+
+# Substrate concentration in mM
+substr_conc <- c(0,10,20,40,80,160)
+
+# Required params to calculate gradients
+cuv_vol <- 0.003 # volume of cuvette (l)
+eps <- 6220 # extinction coefficient
+enz_vol <- 0.1 # volume of enzyme added (ml)
+```
+
+### Add students and set up parameters for each student
+
+Import Excel file with 3 columns: student_no, first_name, surname. The file should be called student_names.xlsx. Randomly assign each student a substrate and a type of inhibition.
+
+```{r}
+# Import the list with student names
+students <- read_xlsx(here("data", "student_names_real.xlsx"))
+
+# Randomly assign substrate and inhibition type to each student
+students_rxn_conditions <- students %>% 
+  mutate(student_id = paste(toupper(student_no), toupper(first_name), sep = "_"),
+         rxn_substrate = sample(rxn_substr, nrow(students), replace = TRUE), 
+         inhibition_actual = sample(inh_type, nrow(students), replace = TRUE)) %>% 
+  uncount(., 2, .id = "id") %>% 
+  mutate(inhibition_actual = ifelse(id == 2, "no_inhibition", inhibition_actual)) %>% 
+  select(-student_no, -first_name, -surname, -id)
+```
+
+
+```{r}
+# Assemble all basic parameters with student information
+students_rxn_params <- students_rxn_conditions %>% 
+  left_join(., rxn_params, by = c("rxn_substrate", "inhibition_actual")) %>% 
+  mutate(substrate_conc = list(substr_conc)) # Add substrate concentrations as list-column
+
+students_rxn_params
+
+# Fixing Shamus' gremlins
+students_rxn_params <- read_tsv(here("data", "students_rxn_params.txt")) %>% mutate(substrate_conc = list(substr_conc))
+```
+
+### Functions to calculate reaction rates, gradients and fitting of the nls model to MM curve
+
+```{r}
+# Function to calculate reaction rate V, with some jitter added to substrate concentration
+calculateV <- function(Vmax, Km, substrate_conc){
+  V = Vmax  *  ifelse(substrate_conc > 0, jitter(substrate_conc), substrate_conc)  /  (Km    +    ifelse(substrate_conc > 0, jitter(substrate_conc), substrate_conc))
+  return(V)
+}
+
+# Function to calculate gradients for each reaction rate, , with some jitter added to volume of the enzyme
+calculateGradient <- function(Vmax, Km, substrate_conc){
+  V = Vmax  *  ifelse(substrate_conc > 0, jitter(substrate_conc), substrate_conc)  /  (Km    +    ifelse(substrate_conc > 0, jitter(substrate_conc), substrate_conc))
+  gradient = V * jitter(enz_vol) / 1000000 / cuv_vol * eps
+  return(gradient)
+}
+?jitter
+# Function to fit non-linear model to MM curve and estimate Km and Vmax
+# Because different parameters require different levels of nesting, I calculate rxn_rate and gradient separately from Km and Vmax and join them later
+# The nls function doesn't work unless you round the rxn_rate values (floating point error?)
+estimateKmVmax <- function(df){
+  nls(rxn_rate ~ estimated_Vmax * substrate_conc / (estimated_Km + substrate_conc), data = df, start = list(estimated_Km = 5, estimated_Vmax = 0.05)) %>% 
+    tidy() %>% 
+    select(parameter = term, estimate) %>% 
+    mutate(estimate = round(estimate, digits = 2)) %>% 
+    pivot_wider(names_from = parameter, values_from = estimate)
+}
+```
+
+```{r}
+# No jitter - fixing Shamus' gremlins
+# Function to calculate reaction rate V
+calculateV <- function(Vmax, Km, substrate_conc){
+  V = Vmax  * substrate_conc / (Km + substrate_conc)
+  return(V)
+}
+
+# Function to calculate gradients for each reaction rate, , with some jitter added to volume of the enzyme
+calculateGradient <- function(Vmax, Km, substrate_conc){
+  V = Vmax  *  substrate_conc / (Km + substrate_conc)
+  gradient = V * enz_vol / 1000000 / cuv_vol * eps
+  return(gradient)
+}
+
+# Function to fit non-linear model to MM curve and estimate Km and Vmax
+# Because different parameters require different levels of nesting, I calculate rxn_rate and gradient separately from Km and Vmax and join them later
+estimateKmVmax <- function(df){
+  nls(rxn_rate ~ estimated_Vmax * substrate_conc / (estimated_Km + substrate_conc), data = df, start = list(estimated_Km = 5, estimated_Vmax = 0.05)) %>% 
+    tidy() %>% 
+    select(parameter = term, estimate) %>% 
+    mutate(estimate = round(estimate, digits = 2)) %>% 
+    pivot_wider(names_from = parameter, values_from = estimate)
+}
+```
+
+### Estimate Km and Vmax from the data
+
+I shape it into a table suitable for the final print.
+
+```{r}
+# Estimate the Km and Vmax from rxn_rate and substrate_conc
+# The nls function doesn't work unless you round the rxn_rate values!!! (floating point error?)
+estimated_Km_Vmax <- students_rxn_params %>% 
+  mutate(rxn_rate = pmap(select(., Vmax, Km, substrate_conc), calculateV)) %>%  # Calculation of V for different substrate concentrations
+  unnest(c(rxn_rate, substrate_conc)) %>% 
+  mutate(rxn_rate = round(rxn_rate, digits = 2)) %>% 
+  group_by(student_id, rxn_substrate, inhibition_actual) %>%
+  nest() %>% 
+  mutate(estimated_params = map(data, estimateKmVmax)) %>% 
+  select(-data) %>% 
+  mutate(estimated_params = bind_cols(inhibition_type = inhibition_actual, estimated_params)) %>% 
+  unnest(estimated_params) %>% 
+  ungroup() %>% 
+  select(-inhibition_actual) %>%
+  group_by(student_id, rxn_substrate) %>% 
+  nest() %>% 
+  summarise(estimated_params = list(data)) %>% # Is this necessary?
+  unnest(estimated_params)
+
+estimated_Km_Vmax
+```
+### Create data for each student and save to disk
+
+```{r}
+# Function to generate data files for each student
+generateAbsVsTimeData <- function(student_id, df) {
+  df %>% 
+    mutate(student_id = student_id,
+           substrate_conc_char = paste(substrate_conc, "mM", sep = "_")) %>% 
+    select(-c(inhibition_actual, substrate_conc)) %>% 
+    pivot_wider(names_from = substrate_conc_char, values_from = absorbance) %>%  
+    select(student_id, rxn_substrate, rxn_condition, rxn_time, everything()) %>% 
+    write_xlsx(here("output", paste(student_id, "data_new.xlsx", sep = "_")))
+}
+
+# Create the student data
+students_rxn_params %>% 
+  mutate(gradient = pmap(select(., Vmax, Km, substrate_conc), calculateGradient),
+         rxn_time = list(time)) %>%  # Calculate of gradients for different reaction rates
+  unnest(c(rxn_time)) %>% 
+  unnest(c(substrate_conc, gradient)) %>% # Expand the dataframe to have multiple time points for each gradients
+  mutate(absorbance = round(gradient * rxn_time, digits = 3),
+         rxn_condition = case_when(
+           inhibition_actual == "no_inhibition" ~ "without_inhibitor",
+           TRUE ~ "with_inhibitor")) %>%
+  relocate(rxn_condition, .after = inhibition_actual) %>% 
+  select(student_id, rxn_substrate, inhibition_actual, rxn_condition, substrate_conc, rxn_time, absorbance) %>% 
+  group_by(student_id) %>% 
+  nest() %$% 
+  map2(student_id, data, generateAbsVsTimeData)
+```
+
+## Prepare answer files
+
+I generate the answers from the students' data files simulated data. I am **not** re-loading students' answer files to generate the answers.
+
+### Functions to generate plots
+
+Note that for the Lineweaver-Burke plot the x axis limits need to be dynamically calculated to include the x axis intercept for the non-inhibited data, but I don't know how to do it. Currently the limit is hard-coded to -0.05 but it won't be sufficient in all cases.
+
+```{r}
+# Absorbance vs time plot
+plotAbsVsTime <- function(df){
+  df %>% 
+  mutate(gradient = pmap(select(., Vmax, Km, substrate_conc), calculateGradient), # Calculate of gradients for different substrate concentrations
+         rxn_time = list(time)) %>%  
+  unnest(c(rxn_time)) %>% 
+  unnest(c(substrate_conc, gradient)) %>% # Expand the dataframe for reaction rate and concentration
+  mutate(absorbance = round(gradient * rxn_time, digits = 3), # Calculate absorbance
+         substrate_conc = fct_relevel(as.character(substrate_conc), levels = c("0", "10", "20", "40", "80", "160"))) %>% 
+  ggplot() + aes(x = rxn_time, y = absorbance, colour = substrate_conc) + geom_point() + geom_smooth(method = "lm", se = FALSE) + facet_wrap(~inhibition_actual) +
+    labs(x = "Reaction time (min)",
+         y = "Absorbance (AU)",
+         title = "Absorbance vs reaction time plot",
+         colour = "Substrate concentration (mM)") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+# Michaelis-Menten plot
+plotMM <- function(df) {
+  df %>% 
+  mutate(rxn_rate = pmap(select(., Vmax, Km, substrate_conc), calculateV)) %>%  # Calculate reaction rates 
+  unnest(c(substrate_conc, rxn_rate)) %>% # Expand the dataframe for reaction rate and concentration
+  ggplot() + aes(x = substrate_conc, y = rxn_rate, colour = inhibition_actual) + geom_point() +
+    labs(x = "Substrate concentration (mM)",
+         y = "Reaction rate (∆abs/min)",
+         title = "Michaelis-Menten plot",
+         colour = "Type of inhibition") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+# Lineweaver-Burke plot
+plotLB <- function(df) {
+  df %>% 
+  mutate(rxn_rate = pmap(select(., Vmax, Km, substrate_conc), calculateV)) %>%  # Calculate of gradients for different reaction rates 
+  unnest(c(substrate_conc, rxn_rate)) %>% # Expand the dataframe for reaction rate and concentration
+  filter(substrate_conc != 0) %>% 
+  mutate(substrate_conc_reciprocal = 1/substrate_conc, 
+         rxn_rate_reciprocal = 1/rxn_rate) %>% 
+  ggplot() + aes(x = substrate_conc_reciprocal, y = rxn_rate_reciprocal, colour = inhibition_actual) + geom_point() + expand_limits(x = -0.05) + geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) +
+    labs(x = "Reciprocal substrate concentration (mM)",
+         y = "Reciprocal reaction rate",
+         title = "Lineweaver-Burke plot",
+         colour = "Type of inhibition") +
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    stat_poly_eq(aes(label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "*\", \"*")))
+}
+```
+
+### Generate all the plots 
+
+...and add the table with estimated Km and Vmax for the final print
+
+```{r}
+students_answers_data <- students_rxn_params %>% 
+  left_join(., estimated_Km_Vmax, by = c("student_id", "rxn_substrate")) %>% 
+  mutate(inhibition_actual = fct_relevel(inhibition_actual, "no_inhibition", after = 0L)) %>% 
+  group_by(student_id) %>% 
+  nest() %>% 
+  mutate(abs_vs_time_plot = map(data, plotAbsVsTime),
+         mm_plot = map(data, plotMM),
+         lb_plot = map(data, plotLB)) %>% 
+  unnest(data) %>% 
+  select(student_id, rxn_substrate, inhibition_actual, abs_vs_time_plot, mm_plot, lb_plot, estimated_params) %>% 
+  filter(inhibition_actual != "no_inhibition")
+```
+
+### Combine all the elements and print the answer file for each student
+
+Answers for each students are saved on a single page PDF and then combined into a multi-page document for ease of printing.
+
+```{r}
+createAnswerPDF <- function(student_id, rxn_substrate, inhibition_actual, abs_vs_time_plot, mm_plot, lb_plot, estimated_params){
+  table1 <- tableGrob(tibble("info" = c("student", "substrate"), " " = c(student_id, rxn_substrate)), rows = NULL, cols = NULL)
+  table2 <- tableGrob(unnest(estimated_params), rows = NULL)
+  layout <- rbind(c(1,2), c(3,3), c(3,3), c(4,5), c(4,5))
+  answers <- grid.arrange(table1, table2, abs_vs_time_plot, mm_plot, lb_plot, layout_matrix = layout)
+  return(answers)
+}
+
+ggsave(plot = marrangeGrob(pmap(students_answers_data, createAnswerPDF), nrow=1, ncol=1), here("output", "SIB2004_answers_all_students.pdf"), width = 210, height = 297, units = "mm", dpi = "retina")
+```
+
+```{r}
+# Solution for separate files for each student
+createAnswerPDF2 <- function(student_id, rxn_substrate, inhibition_actual, abs_vs_time_plot, mm_plot, lb_plot, estimated_params){
+  table1 <- tableGrob(tibble("info" = c("student", "substrate"), " " = c(student_id, rxn_substrate)), rows = NULL, cols = NULL)
+  table2 <- tableGrob(unnest(estimated_params), rows = NULL)
+  layout <- rbind(c(1,2), c(3,3), c(3,3), c(4,5), c(4,5))
+  answers <- grid.arrange(table1, table2, abs_vs_time_plot, mm_plot, lb_plot, layout_matrix = layout)
+  ggsave(plot = answers, path = here("output"), filename = paste0(student_id, "_answers_new.pdf"), units = "mm", width = 210, height = 297, dpi = "retina")
+}
+
+pmap(students_answers_data, createAnswerPDF2)
+```
