@@ -1,0 +1,48 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+kcat <- 320
+km <- 17000
+enzyme_conc = 0.000095
+t = 60
+alcohol_conc = 160000
+moles_enzyme = (enzyme_conc * 100)/1000
+vmax = moles_enzyme * kcat * 4
+```
+
+```{r}
+velocity <- function(s){
+  v = (vmax * s)/(km + s)
+  return(v)
+}
+
+new_s <- function(s, v){
+  mole_alc = s * 0.003
+  mole_alc = mole_alc - v
+  s = mole_alc/0.003
+  return(s)
+}
+velocity(alcohol_conc)
+new_s(alcohol_conc, vmax)
+new_s(alcohol_conc, velocity(alcohol_conc))
+```
+
+
+```{r}
+t = 60
+s = alcohol_conc
+while(t >= 0){
+  v = velocity(s)
+  print(c(t, v))
+  s = new_s(c(s, v))
+  t = t - 1
+}
+```
+```{r}
+t = 60
+
+```
+
