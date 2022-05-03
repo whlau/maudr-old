@@ -2,11 +2,14 @@
 title: "R Notebook"
 output: html_notebook
 ---
+```{r}
+library(tidyverse)
+```
 
 ```{r}
 kcat <- 340 #per second
 km <- 17000 #microMolar
-enzyme_conc = 9e-05 #microMole/millilitre
+enzyme_conc = 0.000095 #microMole/millilitre
 t = 60 #time
 alcohol_conc = 160000 #microMolar
 moles_enzyme = (enzyme_conc * 100)/1000 
@@ -76,6 +79,7 @@ while(rxntime <= t){
   rxntime = rxntime + timeInterval
 }
 df <- data.frame(a, b)
+colnames(df) <- c("substrate_depletion", "rxntime")
 df
 ```
 ```{r}
@@ -95,5 +99,42 @@ while(rxntime <= t){
 }
 
 
+```
+```{r}
+c <- numeric()
+d <- numeric()
+rxntime = 0 #sets rxntime at 0
+substrateConc = alcohol_conc #initial substrate concentration
+initMolesSubs = alcohol_conc * 0.003 #initial Moles of substrate
+timeInterval = t
+velocity = velocity_calc(substrateConc)
+while(rxntime <= t){
+  molesSubstrate = molesSubstrate_calc(substrateConc, velocity, timeInterval, rxntime) #moles of substrate remaining
+  velocity = velocity_calc(substrateConc)
+  absorbance = absorbance_calc(initMolesSubs, molesSubstrate)
+  substrateConc = substrateConc_calc(substrateConc, velocity, timeInterval, rxntime)
+  print(c(rxntime, velocity, molesSubstrate, substrateConc, absorbance))
+  c <- c(c, absorbance)
+  d <- c(d, rxntime)
+  rxntime = rxntime + timeInterval
+}
+df2 <- data.frame(c, d)
+colnames(df2) <- c("contant_substrate", "rxntime")
+```
+
+```{r}
+test <- merge(df, df2, by = "rxntime", all = TRUE)
+test1 <- test %>%
+  pivot_longer(cols = !rxntime, names_to = "condition", values_to = "absorbance") %>%
+  drop_na()
+?pivot_longer
+```
+```{r}
+test1 %>%
+  group_by(condition) %>% 
+  ggplot() +
+  aes(x = rxntime, y = absorbance, group = condition, colour = condition) +
+  geom_line()
+  
 ```
 

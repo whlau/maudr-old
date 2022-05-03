@@ -18,7 +18,7 @@ velocity = velocity/60 #microMoles/s
 maxSubtrateConc = 250000 #microMolar
 activeSites = 4 #number of active sites of the enzyme 
 volumeEnzyme = 0.1 #millilitres
-t = 1000 #runtime
+t = 60 #runtime
 timeInterval = 1
 ```
 ```{r}
@@ -82,10 +82,10 @@ absorbance_calc <- function(i, s){
 
 ```{r}
 
-enzyme_calc <- function(substrate_Conc, Km, Vmax){
+enzyme_calc <- function(substrate_Conc, K_m, Vmax){
   a <- numeric()
   b <- numeric()
-  Km = Km * 1000
+  Km = K_m * 1000
   rxntime = 0 #sets rxntime at 0
   substrateConc = substrate_Conc * 1000 #initial substrate concentration
   initMolesSubs = substrateConc * volumeCuvette #initial Moles of substrate
@@ -100,9 +100,32 @@ enzyme_calc <- function(substrate_Conc, Km, Vmax){
     b <- c(b, rxntime)
     rxntime = rxntime + timeInterval
   }
-  df <- data.frame(a, b)
-  colnames(df) <- c("absorbance", "rxntime")
-  df
+  c <- numeric()
+  d <- numeric()
+  rxntime = 0 #sets rxntime at 0
+  substrateConc = substrate_Conc * 1000 #initial substrate concentration
+  initMolesSubs = substrateConc * volumeCuvette #initial Moles of substrate
+  timeInterval = t
+  velocity = velocity_calc(substrateConc, Vmax, Km)
+  while(rxntime <= t){
+    molesSubstrate = molesSubstrate_calc(substrateConc, velocity,timeInterval, rxntime) #moles of substrate remaining
+    velocity = velocity_calc(substrateConc, Vmax, Km)
+    absorbance = absorbance_calc(initMolesSubs, molesSubstrate)
+    substrateConc = substrateConc_calc(substrateConc, velocity, timeInterval, rxntime)
+    #print(c(rxntime, velocity, molesSubstrate, substrateConc, absorbance))
+    c <- c(c, absorbance)
+    d <- c(d, rxntime)
+  rxntime = rxntime + timeInterval
+  }
+  df10 <- data.frame(a, b)
+  df11 <- data.frame(c, d)
+  colnames(df10) <- c("substrate_depletion", "rxntime")
+  colnames(df11) <- c("contant_substrate", "rxntime")
+  df12 <- merge(df10, df11, by = "rxntime", all = TRUE)
+  df12 <- df12 %>%
+  pivot_longer(cols = !rxntime, names_to = "condition", values_to = "absorbance") %>%
+  drop_na()
+  df12
 }
 
 ```
@@ -126,9 +149,9 @@ df1$data[1]
 ```
 ```{r}
 absorbanceGraphs <- function(df){
-  df %>% 
-    ggplot() + 
-    aes(x = rxntime, y = absorbance) +
+  df %>%
+    ggplot() +
+    aes(x = rxntime, y = absorbance, group = condition, colour = condition) +
     geom_line()
 }
 ```
