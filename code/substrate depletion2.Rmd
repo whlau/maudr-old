@@ -1,0 +1,141 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+library(tidyverse)
+library(here)
+library(readxl)
+```
+```{r}
+volumeCuvette = 0.003
+abs = 1.5
+extinctionCoeff = 6220
+conc = 1.5/6220 #Molar
+conc = conc * 1000000 #microMolar
+velocity = conc * volumeCuvette #microMoles/min
+velocity = velocity/60 #microMoles/s 
+maxSubtrateConc = 250000 #microMolar
+activeSites = 4 #number of active sites of the enzyme 
+volumeEnzyme = 0.1 #millilitres
+t = 1000 #runtime
+timeInterval = 1
+```
+```{r}
+enzymeConc_calc <- function(KM, Kcat){
+  KM_S = (maxSubtrateConc + (KM * 1000))
+  Vmax = (velocity * KM_S)/maxSubtrateConc 
+  conc_of_enzyme = Vmax/(activeSites * Kcat)
+  conc_of_enzyme = conc_of_enzyme * 10
+  return(conc_of_enzyme)
+}
+
+Vmax_calc <- function(Kcat, enzymeConc){
+  moles_of_enzyme = enzymeConc * volumeEnzyme
+  Vmax = moles_of_enzyme * activeSites * Kcat
+  return(Vmax)
+}
+```
+
+```{r}
+#function to calculate velocity of enzyme reaction at given substrate concentration
+velocity_calc <- function(s, vmax, km){
+  v = (vmax * s)/(km + s)
+  return(v)
+}
+
+#function to calculate new substrate concentration
+substrateConc_calc <- function(s, v, t, rxntime){
+  if (rxntime != 0){
+    mole_alc = s * 0.003
+    mole_alc = mole_alc - (v * t)
+    s = mole_alc/0.003
+    return(s)
+  }
+  else{
+    return(s)
+  }
+}
+
+#function to calculate remaining moles of substrate
+molesSubstrate_calc <- function(s, v, t, rxntime){
+  if (rxntime != 0){
+    mole_alc = s * 0.003
+    mole_alc = mole_alc - (v * t)
+    return(mole_alc)
+  }
+  else{
+    mole_alc = s * 0.003
+    return(mole_alc)
+  }
+}
+
+#function to calculate absorbance
+absorbance_calc <- function(i, s){
+  mole_product = i - s #moles of product
+  conc_product = mole_product/0.003 #conctration of product microMolar
+  conc_product = conc_product/1000000 #concentration of product in Molar
+  abs = conc_product * 6220
+  return(abs)
+}
+```
+
+```{r}
+
+enzyme_calc <- function(substrateConc, Km, Vmax){
+  a <- numeric()
+  b <- numeric()
+  Km = Km * 1000
+  rxntime = 0 #sets rxntime at 0
+  substrateConc = substrateConc * 1000 #initial substrate concentration
+  initMolesSubs = substrateConc * volumeCuvette #initial Moles of substrate
+  velocity = velocity_calc(substrateConc, Vmax, Km)
+  while(rxntime <= t){
+    molesSubstrate = molesSubstrate_calc(substrateConc, velocity,timeInterval, rxntime) #moles of substrate remaining
+    velocity = velocity_calc(substrateConc, Vmax, Km)
+    absorbance = absorbance_calc(initMolesSubs, molesSubstrate)
+    substrateConc = substrateConc_calc(substrateConc, velocity, timeInterval, rxntime)
+#    print(c(rxntime, velocity, molesSubstrate, substrateConc, absorbance))
+    a <- c(a, absorbance)
+    b <- c(b, rxntime)
+    rxntime = rxntime + timeInterval
+  }
+  df <- data.frame(a, b)
+  colnames(df) <- c("absorbance", "rxntime")
+  df
+}
+
+```
+
+```{r}
+rxn_params <- read_xlsx(here("data", "reaction_parameters.xlsx"))
+rxn_params <- rxn_params %>% filter(inhibition_actual == "no_inhibition") %>% 
+  mutate(enzyme_conc = signif(enzymeConc_calc(Km, Kcat), digits = 1)) %>% 
+  mutate(Vmax = Vmax_calc(Kcat, enzyme_conc)) %>% 
+  mutate(min_substrate_conc = 1) 
+# mutate(max_substrate_conc = maxSubtrateConc) %>%
+
+
+rxn_params
+```
+```{r}
+df1 <- rxn_params %>% 
+ mutate(data = pmap(list(250, Km, Vmax), enzyme_calc))
+
+df1$data[1]
+```
+```{r}
+absorbanceGraphs <- function(df){
+  df %>% 
+    ggplot() + 
+    aes(x = rxntime, y = absorbance) +
+    geom_line()
+}
+```
+```{r}
+df1 <- df1 %>% 
+ mutate(plot = map(data, absorbanceGraphs))
+
+df1$plot
+```
+
