@@ -133,9 +133,9 @@ enzyme_calc <- function(substrate_Conc, K_m, Vmax){
 ```{r}
 rxn_params <- read_xlsx(here("data", "reaction_parameters.xlsx"))
 rxn_params <- rxn_params %>% filter(inhibition_actual == "no_inhibition") %>% 
-  mutate(enzyme_conc = signif(enzymeConc_calc(Km, Kcat), digits = 1)) %>% 
+  mutate(enzyme_conc = signif(enzymeConc_calc(Km, Kcat), digits = 2)) %>% 
   mutate(Vmax = Vmax_calc(Kcat, enzyme_conc)) %>% 
-  mutate(min_substrate_conc = 1) 
+  mutate(Vmax60 = Vmax * 60) 
 # mutate(max_substrate_conc = maxSubtrateConc) %>%
 
 
@@ -143,7 +143,7 @@ rxn_params
 ```
 ```{r}
 df1 <- rxn_params %>% 
- mutate(data = pmap(list(250, Km, Vmax), enzyme_calc))
+ mutate(data = pmap(list(160, Km, Vmax), enzyme_calc))
 
 df1$data[1]
 ```

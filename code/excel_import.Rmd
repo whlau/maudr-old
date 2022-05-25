@@ -1,0 +1,158 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r}
+library(readxl)
+```
+
+```{r}
+#Directory Name
+DirectoryName <-  "24-May-2022 21.25"
+
+#creating list of excel files
+excel_list <- list.files(here("data/", DirectoryName), pattern = "xlsx", full.names = TRUE)
+
+#Loading student excel files
+excelData <- map_df(excel_list, read_excel)
+excelData <- excelData %>% group_by(student_id) %>% nest()
+excelData$data[[1]]
+
+estimateKmVmax <- function(df){
+  nls(rxn_rate ~ estimated_Vmax * substrate_conc / (estimated_Km + substrate_conc), data = df, start = list(estimated_Km = 5, estimated_Vmax = 0.05)) %>% 
+    tidy() %>% 
+    select(parameter = term, estimate) %>% 
+    mutate(estimate = round(estimate, digits = 2)) %>% 
+    pivot_wider(names_from = parameter, values_from = estimate)
+}
+```
+```{r}
+#function for Lineweaver-Burke plot
+plotLB2 <- function(df) {
+  df %>%
+  pivot_longer(names_to = "substrate_conc",values_to = "absorbance", cols = contains("mM")) %>% 
+  group_by(rxn_condition, substrate_conc) %>% 
+  nest %>% 
+  mutate(substrate_conc = as.numeric(gsub('[a-zA-Z_]', '', substrate_conc))) %>%
+  mutate(`lm` = map(data, doLM)) %>% 
+  mutate(slope = map_dbl(`lm`, getSlope)) %>% 
+  mutate(rxn_rate = map_dbl(slope, velocity_calc)) %>% 
+  filter(substrate_conc != 0) %>% 
+  mutate(substrate_conc_reciprocal = 1/substrate_conc, 
+         rxn_rate_reciprocal = 1/rxn_rate) %>% 
+  ggplot() + aes(x = substrate_conc_reciprocal, y = rxn_rate_reciprocal, colour = rxn_condition) + geom_point() + expand_limits(x = -0.05) + geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) +
+    labs(x = "Reciprocal substrate concentration (mM)",
+         y = "Reciprocal reaction rate",
+         title = "Lineweaver-Burke plot",
+         colour = "Type of inhibition") +
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    stat_poly_eq(aes(label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "*\", \"*")))
+}
+
+#function to calculate velocity from slope
+velocity_calc <- function(slope){
+  velocity = slope / 6220 
+  velocity = (velocity * 3) / 1000
+  velocity = velocity * 1000000
+  velocity = velocity * 10
+  return(velocity)
+}
+
+
+# function to calculate gradient from absorbance data
+doLM <- function(dat){
+  lm(absorbance ~ rxn_time, dat)
+}
+
+# function to return the slope of line of best fit
+getSlope <- function(lmcoeff){
+  coef(lmcoeff)[2]
+}
+
+#fuction to plot Michaelis-Menten
+#plotMM2 <- function(df) {
+test$data[[1]] %>% 
+  pivot_longer(names_to = "substrate_conc",values_to = "absorbance", cols = contains("mM")) %>% 
+  group_by(rxn_condition, substrate_conc) %>% 
+  nest %>% 
+  mutate(substrate_conc = as.numeric(gsub('[a-zA-Z_]', '', substrate_conc))) %>%
+  mutate(`lm` = map(data, doLM)) %>% 
+  mutate(slope = map_dbl(`lm`, getSlope)) %>% 
+  mutate(rxn_rate = map_dbl(slope, velocity_calc)) %>% 
+  ggplot() + aes(x = substrate_conc, y = rxn_rate, colour = rxn_condition) + geom_point() +
+    labs(x = "Substrate concentration (mM)",
+         y = "Reaction rate (∆abs/min)",
+         title = "Michaelis-Menten plot",
+         colour = "Type of inhibition") +
+    theme_minimal() +
+    theme(legend.position = "bottom")
+}
+
+#function for absorbance plots
+plotAbsVsTime2 <- function(df){
+  df %>%
+  pivot_longer(names_to = "substrate_conc",values_to = "absorbance", cols = contains("mM")) %>% 
+  ggplot() +
+  aes(x = rxn_time, y = absorbance, colour = substrate_conc) +
+  expand_limits(x = 0) +
+  geom_point() + geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) + facet_wrap(~rxn_condition)
+}
+```
+```{r}
+test <- excelData %>%
+  mutate(abs_vs_time_plot = map(data, plotAbsVsTime2),
+         lb_plot = map(data, plotLB2))
+test$lb_plot[[2]]
+test$data[[1]]
+```
+```{r}
+test$data[[5]] %>%
+  pivot_longer(names_to = "substrate_conc",values_to = "absorbance", cols = contains("mM")) %>% 
+  group_by(rxn_condition, substrate_conc) %>% 
+  nest %>% 
+  mutate(substrate_conc = as.numeric(gsub('[a-zA-Z_]', '', substrate_conc))) %>%
+  mutate(`lm` = map(data, doLM)) %>% 
+  mutate(slope = map_dbl(`lm`, getSlope)) %>% 
+  mutate(rxn_rate = map_dbl(slope, velocity_calc)) %>% 
+  filter(substrate_conc != 0) %>% 
+  mutate(substrate_conc_reciprocal = 1/substrate_conc, 
+         rxn_rate_reciprocal = 1/rxn_rate) %>% 
+  ggplot() + aes(x = substrate_conc_reciprocal, y = rxn_rate_reciprocal, colour = rxn_condition) + geom_point() + expand_limits(x = -0.05) + geom_smooth(method = "lm", se = FALSE, fullrange = TRUE) +
+    labs(x = "Reciprocal substrate concentration (mM)",
+         y = "Reciprocal reaction rate",
+         title = "Lineweaver-Burke plot",
+         colour = "Type of inhibition") +
+    theme_minimal() +
+    theme(legend.position = "bottom") +
+    stat_poly_eq(aes(label =  paste(after_stat(eq.label), after_stat(rr.label), sep = "*\", \"*")))
+```
+
+
+### Estimate Km and Vmax from the data
+
+I shape it into a table suitable for the final print.
+
+```{r}
+# Estimate the Km and Vmax from rxn_rate and substrate_conc
+# The nls function doesn't work unless you round the rxn_rate values!!! (floating point error?)
+estimated_Km_Vmax <- students_rxn_params %>% 
+  mutate(rxn_rate = pmap(select(., Vmax, Km, substrate_conc), calculateV)) %>%  # Calculation of V for different substrate concentrations
+  unnest(c(rxn_rate, substrate_conc)) %>% 
+  mutate(rxn_rate = round(rxn_rate, digits = 2)) %>% 
+  group_by(student_id, rxn_substrate, inhibition_actual) %>%
+  nest() %>% 
+  mutate(estimated_params = map(data, estimateKmVmax)) %>% 
+  select(-data) %>% 
+  mutate(estimated_params = bind_cols(inhibition_type = inhibition_actual, estimated_params)) %>% 
+  unnest(estimated_params) %>% 
+  ungroup() %>% 
+  select(-inhibition_actual) %>%
+  group_by(student_id, rxn_substrate) %>% 
+  nest() %>% 
+  summarise(estimated_params = list(data)) %>% # Is this necessary?
+  unnest(estimated_params)
+
+estimated_Km_Vmax
+```
+
